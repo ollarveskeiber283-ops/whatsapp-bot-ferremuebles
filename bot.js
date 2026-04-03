@@ -1,12 +1,15 @@
-const { Client, LocalAuth } = require('whatsapp-web.js');
-const qrcode = require('qrcode-terminal');
+const makeWASocket = require('@whiskeysockets/baileys').default;
+const { useMultiFileAuthState } = require('@whiskeysockets/baileys');
+const { Boom } = require('@hapi/boom');
 const express = require('express');
+const QRCode = require('qrcode');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-let qrCode = null;
-let clientReady = false;
+let qrCodeImage = null;
+let sock = null;
+let isConnected = false;
 
 // Servidor web para mostrar el QR
 app.get('/', (req, res) => {
@@ -27,14 +30,13 @@ app.get('/', (req, res) => {
             <body>
                 <h1>🤖 Bot Ferremuebles</h1>
                 <div class="status">
-                    Estado: <span class="${clientReady ? 'connected' : 'waiting'}">${clientReady ? '🟢 Conectado' : '🟡 Esperando QR'}</span>
+                    Estado: <span class="${isConnected ? 'connected' : 'waiting'}">${isConnected ? '🟢 Conectado' : '🟡 Esperando QR'}</span>
                 </div>
                 <div class="qr-container">
-                    ${qrCode ? `<img src="https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(qrCode)}" style="max-width: 300px; border: 1px solid #ccc; padding: 10px;">` : '<p>⏳ Generando código QR... espera unos segundos</p>'}
+                    ${qrCodeImage ? `<img src="${qrCodeImage}" style="max-width: 300px; border: 1px solid #ccc; padding: 10px;">` : '<p>⏳ Generando código QR... espera unos segundos</p>'}
                 </div>
-                ${!clientReady && qrCode ? '<p><strong>📱 Escanea este QR con WhatsApp</strong><br>Ajustes → Dispositivos vinculados → Vincular dispositivo</p>' : ''}
-                ${clientReady ? '<p>✅ ¡Bot conectado! Ya puedes recibir mensajes automáticos</p>' : ''}
-                <p><small>El QR se actualiza automáticamente si expira</small></p>
+                ${!isConnected && qrCodeImage ? '<p><strong>📱 Escanea este QR con WhatsApp</strong><br>Ajustes → Dispositivos vinculados → Vincular dispositivo</p>' : ''}
+                ${isConnected ? '<p>✅ ¡Bot conectado! Ya puedes recibir mensajes automáticos</p>' : ''}
                 <button onclick="location.reload()">🔄 Recargar QR</button>
             </body>
         </html>
@@ -42,22 +44,21 @@ app.get('/', (req, res) => {
 });
 
 app.get('/qr', (req, res) => {
-    if (qrCode) {
+    if (qrCodeImage) {
         res.send(`
             <html>
                 <head><title>QR para WhatsApp</title></head>
                 <body style="text-align: center; padding: 50px; font-family: Arial;">
                     <h1>📱 Escanea este QR</h1>
-                    <img src="https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(qrCode)}" style="max-width: 300px; border: 1px solid #ccc; padding: 10px;">
+                    <img src="${qrCodeImage}" style="max-width: 300px;">
                     <p>1. Abre WhatsApp en tu teléfono</p>
                     <p>2. Ve a Ajustes → Dispositivos vinculados → Vincular un dispositivo</p>
                     <p>3. Escanea este código QR</p>
-                    <button onclick="location.reload()">Recargar</button>
                 </body>
             </html>
         `);
     } else {
-        res.send('<h1>⏳ Generando código QR... espera unos segundos y recarga</h1>');
+        res.send('<h1>⏳ Generando QR, espera unos segundos...</h1>');
     }
 });
 
@@ -66,78 +67,80 @@ app.get('/ping', (req, res) => res.send('ok'));
 // Iniciar servidor
 app.listen(PORT, () => console.log(`✅ Servidor web en puerto ${PORT}`));
 
-// Configurar cliente de WhatsApp
-console.log('🚀 Iniciando bot de WhatsApp...');
-
-const client = new Client({
-    authStrategy: new LocalAuth(),
-    puppeteer: {
-        headless: true,
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage'
-        ]
-    }
-});
-
-client.on('qr', (qr) => {
-    qrCode = qr;
-    console.log('📱 NUEVO CÓDIGO QR GENERADO');
-    console.log('✅ Escanea el QR que aparece en la página web:');
-    console.log(`   https://whatsapp-bot-ferremuebles-1.onrender.com/qr`);
-    // También mostrar QR en consola por si acaso
-    qrcode.generate(qr, { small: true });
-});
-
-client.on('ready', () => {
-    clientReady = true;
-    console.log('✅ ¡BOT CONECTADO A WHATSAPP EXITOSAMENTE!');
-    console.log('🎉 El bot ya está listo para recibir mensajes');
-});
-
-client.on('auth_failure', (msg) => {
-    console.error('❌ Error de autenticación:', msg);
-    console.log('🔄 Reintentando...');
-});
-
-client.on('disconnected', (reason) => {
-    console.log('⚠️ Bot desconectado:', reason);
-    clientReady = false;
-    qrCode = null;
-    console.log('🔄 Esperando nuevo QR...');
-});
-
-client.on('message', async (message) => {
-    // Evitar responder a mensajes del propio bot o estados
-    if (message.from.includes('status@broadcast') || message.isStatus) return;
+// Función para iniciar el bot de WhatsApp
+async function startBot() {
+    const { state, saveCreds } = await useMultiFileAuthState('auth_info');
     
-    console.log(`📨 Mensaje recibido de ${message.from}: ${message.body}`);
+    sock = makeWASocket({
+        auth: state,
+        printQRInTerminal: true,
+        browser: ['Ferremuebles Bot', 'Chrome', '1.0.0']
+    });
     
-    try {
-        let respuesta = '';
-        const texto = message.body.toLowerCase().trim();
+    sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect, qr } = update;
         
-        // Respuestas básicas para pruebas
-        if (texto === 'hola' || texto === 'hola bot') {
-            respuesta = '¡Hola! Soy el bot de Ferremuebles. ¿En qué puedo ayudarte? 🛠️';
-        } else if (texto === 'gracias') {
-            respuesta = '¡De nada! Estamos para servirte. 😊';
-        } else if (texto === 'chau' || texto === 'adios') {
-            respuesta = '¡Hasta luego! Que tengas un buen día. 👋';
-        } else {
-            respuesta = 'Gracias por tu mensaje. Soy el asistente automático de Ferremuebles. Pronto te atenderá un representante. 📱';
+        if (qr) {
+            console.log('📱 NUEVO QR GENERADO');
+            // Convertir QR a imagen para mostrar en web
+            qrCodeImage = await QRCode.toDataURL(qr);
+            console.log('✅ QR listo para escanear en la página web');
         }
         
-        await message.reply(respuesta);
-        console.log(`✅ Respuesta enviada a ${message.from}`);
+        if (connection === 'close') {
+            const shouldReconnect = (lastDisconnect.error instanceof Boom) && lastDisconnect.error.output.statusCode !== 401;
+            console.log('❌ Conexión cerrada, reconectando...', shouldReconnect);
+            if (shouldReconnect) {
+                startBot();
+            } else {
+                isConnected = false;
+                console.log('⚠️ Sesión cerrada, escanea el QR nuevamente');
+            }
+        }
         
-    } catch (error) {
-        console.error('❌ Error al responder:', error);
-        await message.reply('⚠️ Lo siento, tuve un problema técnico. Por favor intenta de nuevo.');
-    }
-});
+        if (connection === 'open') {
+            isConnected = true;
+            qrCodeImage = null;
+            console.log('✅ ¡BOT CONECTADO A WHATSAPP EXITOSAMENTE!');
+            console.log('🎉 El bot ya está listo para recibir mensajes');
+        }
+    });
+    
+    sock.ev.on('creds.update', saveCreds);
+    
+    // Manejar mensajes entrantes
+    sock.ev.on('messages.upsert', async (m) => {
+        const msg = m.messages[0];
+        if (!msg.message || msg.key.fromMe) return;
+        
+        const sender = msg.key.remoteJid;
+        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
+        
+        console.log(`📨 Mensaje de ${sender}: ${text}`);
+        
+        try {
+            let respuesta = '';
+            const texto = text.toLowerCase().trim();
+            
+            if (texto === 'hola' || texto === 'hola bot') {
+                respuesta = '¡Hola! Soy el bot de Ferremuebles. ¿En qué puedo ayudarte? 🛠️';
+            } else if (texto === 'gracias') {
+                respuesta = '¡De nada! Estamos para servirte. 😊';
+            } else if (texto === 'chau' || texto === 'adios') {
+                respuesta = '¡Hasta luego! Que tengas un buen día. 👋';
+            } else {
+                respuesta = 'Gracias por tu mensaje. Soy el asistente automático de Ferremuebles. Pronto te atenderá un representante. 📱';
+            }
+            
+            await sock.sendMessage(sender, { text: respuesta });
+            console.log(`✅ Respuesta enviada a ${sender}`);
+            
+        } catch (error) {
+            console.error('❌ Error al responder:', error);
+        }
+    });
+}
 
-client.initialize();
-
-console.log('✨ Bot inicializado. Esperando QR...');
+// Iniciar el bot
+startBot();
+console.log('🚀 Iniciando bot de WhatsApp con Baileys...');
