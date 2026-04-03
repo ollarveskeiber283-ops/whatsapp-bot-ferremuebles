@@ -4,6 +4,7 @@
   "description": "Bot de WhatsApp para Ferremuebles",
   "main": "bot.js",
   "scripts": {
+    "postinstall": "npx puppeteer browsers install chrome",
     "start": "node bot.js"
   },
   "dependencies": {
