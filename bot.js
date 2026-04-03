@@ -11,7 +11,7 @@ let qrCodeImage = null;
 let sock = null;
 let isConnected = false;
 
-// Servidor web para mostrar el QR
+// Servidor web para mostrar el QR (opcional, pero útil)
 app.get('/', (req, res) => {
     res.send(`
         <html>
@@ -33,33 +33,14 @@ app.get('/', (req, res) => {
                     Estado: <span class="${isConnected ? 'connected' : 'waiting'}">${isConnected ? '🟢 Conectado' : '🟡 Esperando QR'}</span>
                 </div>
                 <div class="qr-container">
-                    ${qrCodeImage ? `<img src="${qrCodeImage}" style="max-width: 300px; border: 1px solid #ccc; padding: 10px;">` : '<p>⏳ Generando código QR... espera unos segundos</p>'}
+                    ${qrCodeImage ? `<img src="${qrCodeImage}" style="max-width: 300px; border: 1px solid #ccc; padding: 10px;">` : '<p>⏳ Escanea el QR que aparece en los LOGS de Render</p>'}
                 </div>
-                ${!isConnected && qrCodeImage ? '<p><strong>📱 Escanea este QR con WhatsApp</strong><br>Ajustes → Dispositivos vinculados → Vincular dispositivo</p>' : ''}
+                ${!isConnected ? '<p><strong>📱 Instrucciones:</strong><br>1. Mira los LOGS de Render<br>2. Busca un bloque de caracteres ███<br>3. Cópialo y ve a https://api.qrserver.com/v1/create-qr-code/?data= (pega el bloque al final)<br>4. Escanea el QR con WhatsApp</p>' : ''}
                 ${isConnected ? '<p>✅ ¡Bot conectado! Ya puedes recibir mensajes automáticos</p>' : ''}
-                <button onclick="location.reload()">🔄 Recargar QR</button>
+                <button onclick="location.reload()">🔄 Recargar</button>
             </body>
         </html>
     `);
-});
-
-app.get('/qr', (req, res) => {
-    if (qrCodeImage) {
-        res.send(`
-            <html>
-                <head><title>QR para WhatsApp</title></head>
-                <body style="text-align: center; padding: 50px; font-family: Arial;">
-                    <h1>📱 Escanea este QR</h1>
-                    <img src="${qrCodeImage}" style="max-width: 300px;">
-                    <p>1. Abre WhatsApp en tu teléfono</p>
-                    <p>2. Ve a Ajustes → Dispositivos vinculados → Vincular un dispositivo</p>
-                    <p>3. Escanea este código QR</p>
-                </body>
-            </html>
-        `);
-    } else {
-        res.send('<h1>⏳ Generando QR, espera unos segundos...</h1>');
-    }
 });
 
 app.get('/ping', (req, res) => res.send('ok'));
@@ -73,18 +54,27 @@ async function startBot() {
     
     sock = makeWASocket({
         auth: state,
-        printQRInTerminal: true,
-        browser: ['Ferremuebles Bot', 'Chrome', '1.0.0']
+        printQRInTerminal: true,  // Esto hace que el QR se muestre en los logs
+        browser: ['Ferremuebles Bot', 'Chrome', '1.0.0'],
+        logger: require('pino')({ level: 'silent' }), // Reduce logs innecesarios
     });
     
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
         
         if (qr) {
-            console.log('📱 NUEVO QR GENERADO');
-            // Convertir QR a imagen para mostrar en web
-            qrCodeImage = await QRCode.toDataURL(qr);
-            console.log('✅ QR listo para escanear en la página web');
+            console.log('\n\n========== 📱 CÓDIGO QR GENERADO ==========');
+            console.log('✅ COPIA EL BLOQUE DE TEXTO QUE APARECE A CONTINUACIÓN:');
+            console.log(qr);
+            console.log('=========================================\n\n');
+            
+            // También convertir a imagen por si acaso
+            try {
+                qrCodeImage = await QRCode.toDataURL(qr);
+                console.log('✅ QR también disponible en la página web (si carga)');
+            } catch (err) {
+                console.log('⚠️ No se pudo generar imagen del QR');
+            }
         }
         
         if (connection === 'close') {
@@ -101,8 +91,8 @@ async function startBot() {
         if (connection === 'open') {
             isConnected = true;
             qrCodeImage = null;
-            console.log('✅ ¡BOT CONECTADO A WHATSAPP EXITOSAMENTE!');
-            console.log('🎉 El bot ya está listo para recibir mensajes');
+            console.log('\n\n✅ ¡BOT CONECTADO A WHATSAPP EXITOSAMENTE!');
+            console.log('🎉 El bot ya está listo para recibir mensajes\n\n');
         }
     });
     
@@ -116,7 +106,7 @@ async function startBot() {
         const sender = msg.key.remoteJid;
         const text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
         
-        console.log(`📨 Mensaje de ${sender}: ${text}`);
+        console.log(`📨 Mensaje recibido de ${sender}: ${text}`);
         
         try {
             let respuesta = '';
@@ -128,6 +118,8 @@ async function startBot() {
                 respuesta = '¡De nada! Estamos para servirte. 😊';
             } else if (texto === 'chau' || texto === 'adios') {
                 respuesta = '¡Hasta luego! Que tengas un buen día. 👋';
+            } else if (texto.includes('precio') || texto.includes('costo')) {
+                respuesta = 'Por favor, consulta nuestros precios en nuestra tienda o comunícate con un vendedor. Estamos para ayudarte. 📞';
             } else {
                 respuesta = 'Gracias por tu mensaje. Soy el asistente automático de Ferremuebles. Pronto te atenderá un representante. 📱';
             }
@@ -142,5 +134,6 @@ async function startBot() {
 }
 
 // Iniciar el bot
-startBot();
 console.log('🚀 Iniciando bot de WhatsApp con Baileys...');
+console.log('🔄 El código QR aparecerá en los logs en unos segundos...');
+startBot();
